@@ -3,8 +3,9 @@
 Set these before running the examples:
 
 ```bash
-export SABI_API_BASE_URL="http://127.0.0.1:8000"
+export SABI_API_BASE_URL="https://sabi.acecollege.com.ng"
 export SABI_API_KEY="replace-with-real-api-key"
+# Do not use https://agent.acecollege.com.ng here — that host serves the OpenClaw web UI.
 ```
 
 ## Health
@@ -81,4 +82,22 @@ curl -X PATCH "$SABI_API_BASE_URL/enforcement/rules/1" \
 ```bash
 curl -X GET "$SABI_API_BASE_URL/enforcement/check" \
   -H "X-API-Key: $SABI_API_KEY" | jq
+```
+
+
+## Troubleshooting
+
+If a curl request returns HTML like `<openclaw-app></openclaw-app>`, you are hitting the OpenClaw control frontend instead of the FastAPI backend. Use the API host (`https://sabi.acecollege.com.ng`) or your direct backend URL, not `https://agent.acecollege.com.ng`.
+
+Quick backend smoke test:
+
+```bash
+curl -i "$SABI_API_BASE_URL/health"
+```
+
+Expected result: JSON from FastAPI, not an HTML document. Once that works, retry:
+
+```bash
+curl -i "$SABI_API_BASE_URL/enforcement/health" \
+  -H "X-API-Key: $SABI_API_KEY"
 ```
