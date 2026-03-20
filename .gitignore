@@ -1,0 +1,13 @@
+# Secrets - DO NOT REMOVE
+.env
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+
+# System Clutter
+.DS_Store
+
+# Saved files
+*.save*

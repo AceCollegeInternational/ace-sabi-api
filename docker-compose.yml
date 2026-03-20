@@ -1,0 +1,22 @@
+services:
+
+  sabi-api:
+    build: .
+    container_name: sabi-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"   # bind to localhost only — Nginx sits in front
+    env_file:
+      - .env
+    networks:
+      - sabi-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+networks:
+  sabi-net:
+    driver: bridge
