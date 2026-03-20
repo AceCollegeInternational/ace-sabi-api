@@ -36,6 +36,7 @@ from routes import students
 from routes import student_attendance
 from routes import student_scores
 from routes import notifications
+from routes import enforcement
 
 # =============================================================================
 # LOGGING
@@ -139,3 +140,4 @@ app.include_router(students.router,           prefix="/students",           tags
 app.include_router(student_attendance.router, prefix="/student-attendance", tags=["Student Attendance"], **PROTECTED)
 app.include_router(student_scores.router,     prefix="/scores",             tags=["Student Scores"],     **PROTECTED)
 app.include_router(notifications.router,      prefix="/notifications",      tags=["Parent Notifications"], **PROTECTED)
+app.include_router(enforcement.router,        prefix="/enforcement",        tags=["Enforcement"],       **PROTECTED)
