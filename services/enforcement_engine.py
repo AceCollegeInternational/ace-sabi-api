@@ -404,48 +404,105 @@ class EnforcementEngine:
             ]
         return candidates
 
-    def _check_attendance_logging(self, term: dict[str, Any]) -> list[ViolationCandidate]:
-        today = date.today()
-        if today.weekday() == 0:
-            with get_sabi() as (_, cur):
-                cur.execute(
-                    """
-                    SELECT t.id AS teacher_id,
-                           CONCAT(t.first_name, ' ', t.last_name) AS teacher_name
-                    FROM teachers t
-                    LEFT JOIN teacher_attendance ta
-                      ON ta.teacher_id = t.id AND ta.log_date = %s
-                    WHERE t.is_active = TRUE AND ta.id IS NULL
-                    """,
-                    (today,),
-                )
-                rows = cur.fetchall()
-            return [
-                ViolationCandidate(
-                    rule_key="attendance_logging",
-                    teacher_id=row["teacher_id"],
-                    teacher_name=row["teacher_name"],
-                    term_id=term["id"],
-                    reference=f"Attendance register for {today.isoformat()}",
-                    deadline=today,
-                )
-                for row in rows
-            ]
+def _check_attendance_logging(self, term: dict[str, Any]) -> list[ViolationCandidate]:
+    today = date.today()
+    academic_session = int(term["academic_year"].split("/")[0])
+    term_of_session  = int(term["term_number"])
 
-        session = "morning" if datetime.now().time() <= time(12, 0) else "noon"
+    # Get all classes and their alternate_teacher_id (class teacher)
+    # from the enterprise DB for the current academic session
+    with get_enterprise() as (_, ent_cur):
+        ent_cur.execute("""
+            SELECT
+                ac.id                   AS class_id,
+                ac.alternate_teacher_id AS enterprise_id,
+                CONCAT(cr.classroom_name, ac.class_division) AS class_name
+            FROM   tb_academic_classes ac
+            JOIN   tb_academic_classrooms cr ON cr.id = ac.classroom_id
+            WHERE  ac.academic_session    = %s
+            AND    ac.alternate_teacher_id != ''
+        """, (academic_session,))
+        classes = ent_cur.fetchall()
+
+    if not classes:
+        return []
+
+    if today.weekday() == 0:
+        # ── Monday — check enterprise DB for week row existence ──────────────
+        # A row in tb_academic_class_morn_attendance for the current week
+        # means the class teacher has opened the register.
+        # We check using attendance_start_date <= today <= attendance_end_date.
+        with get_enterprise() as (_, ent_cur):
+            ent_cur.execute("""
+                SELECT DISTINCT class_id
+                FROM   tb_academic_class_morn_attendance
+                WHERE  academic_session    = %s
+                AND    term_of_session     = %s
+                AND    attendance_start_date <= %s
+                AND    attendance_end_date   >= %s
+            """, (academic_session, term_of_session, today, today))
+            logged_class_ids = {row["class_id"] for row in ent_cur.fetchall()}
+
+        # Classes with no row this week — their class teacher is in default
+        defaulting_enterprise_ids = [
+            cls["enterprise_id"]
+            for cls in classes
+            if cls["class_id"] not in logged_class_ids
+        ]
+
+        if not defaulting_enterprise_ids:
+            return []
+
+        # Resolve enterprise_ids to sabi teacher records
+        placeholders = ",".join(["%s"] * len(defaulting_enterprise_ids))
         with get_sabi() as (_, cur):
-            cur.execute(
-                """
-                SELECT t.id AS teacher_id,
-                       CONCAT(t.first_name, ' ', t.last_name) AS teacher_name
-                FROM teachers t
-                LEFT JOIN attendance_confirmations ac
-                  ON ac.teacher_id = t.id AND ac.confirm_date = %s AND ac.session = %s
-                WHERE t.is_active = TRUE AND ac.id IS NULL
-                """,
-                (today, session),
-            )
+            cur.execute(f"""
+                SELECT id AS teacher_id,
+                       CONCAT(first_name, ' ', last_name) AS teacher_name
+                FROM   teachers
+                WHERE  enterprise_id IN ({placeholders})
+                AND    is_active = TRUE
+            """, tuple(defaulting_enterprise_ids))
             rows = cur.fetchall()
+
+        return [
+            ViolationCandidate(
+                rule_key="attendance_logging",
+                teacher_id=row["teacher_id"],
+                teacher_name=row["teacher_name"],
+                term_id=term["id"],
+                reference=f"Morning register for week of {today.isoformat()}",
+                deadline=today,
+            )
+            for row in rows
+        ]
+
+    else:
+        # ── Tuesday to Friday — check attendance_confirmations in sabi_db ────
+        # Class teachers confirm their register via Telegram each day.
+        # Check morning or noon session based on current time.
+        session = "morning" if datetime.now().time() <= time(12, 0) else "noon"
+
+        # Get enterprise_ids of all class teachers
+        all_enterprise_ids = [cls["enterprise_id"] for cls in classes]
+        placeholders = ",".join(["%s"] * len(all_enterprise_ids))
+
+        with get_sabi() as (_, cur):
+            cur.execute(f"""
+                SELECT
+                    t.id   AS teacher_id,
+                    CONCAT(t.first_name, ' ', t.last_name) AS teacher_name
+                FROM   teachers t
+                LEFT JOIN attendance_confirmations ac
+                    ON  ac.teacher_id   = t.id
+                    AND ac.confirm_date = %s
+                    AND ac.session      = %s
+                WHERE  t.enterprise_id IN ({placeholders})
+                AND    t.is_active      = TRUE
+                AND    ac.id IS NULL
+            """, (today, session, *all_enterprise_ids))
+            rows = cur.fetchall()
+
         return [
             ViolationCandidate(
                 rule_key="attendance_logging",
