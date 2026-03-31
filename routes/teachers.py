@@ -21,6 +21,21 @@ from database.connections import get_sabi, get_enterprise
 router = APIRouter()
 
 
+def _normalize_employment_type(raw: Optional[str]) -> str:
+    """Map enterprise employment labels to the sabi_db ENUM values."""
+    value = (raw or "").strip().lower()
+    mapping = {
+        "regular": "full_time",
+        "full time": "full_time",
+        "full_time": "full_time",
+        "parttime": "part_time",
+        "part time": "part_time",
+        "part_time": "part_time",
+        "contract": "contract",
+    }
+    return mapping.get(value, "full_time")
+
+
 # =============================================================================
 # MODELS
 # =============================================================================
@@ -215,7 +230,7 @@ def sync_from_enterprise():
                     staff["first_name"], staff["last_name"],
                     staff["email"], staff.get("phone"),
                     staff.get("subject_primary"), staff.get("subject_secondary"),
-                    staff.get("employment_type", "full_time"),
+                    _normalize_employment_type(staff.get("employment_type")),
                     staff["date_joined"], staff["enterprise_id"]
                 ))
                 updated += 1
@@ -229,7 +244,8 @@ def sync_from_enterprise():
                     staff["enterprise_id"], staff["first_name"], staff["last_name"],
                     staff["email"], staff.get("phone"),
                     staff.get("subject_primary"), staff.get("subject_secondary"),
-                    {"Regular": "full_time", "Parttime": "part_time"}.get(staff.get("employment_type"), "full_time"), staff["date_joined"]
+                    _normalize_employment_type(staff.get("employment_type")),
+                    staff["date_joined"]
                 ))
                 inserted += 1
 
