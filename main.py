@@ -37,6 +37,11 @@ from routes import student_attendance
 from routes import student_scores
 from routes import notifications
 from routes import enforcement
+from routes import staff_roles
+from routes import teacher_assignments
+from routes import attendance_confirmations
+from routes import scheme_of_work
+from routes import homework_logs
 
 # =============================================================================
 # LOGGING
@@ -141,3 +146,8 @@ app.include_router(student_attendance.router, prefix="/student-attendance", tags
 app.include_router(student_scores.router,     prefix="/scores",             tags=["Student Scores"],     **PROTECTED)
 app.include_router(notifications.router,      prefix="/notifications",      tags=["Parent Notifications"], **PROTECTED)
 app.include_router(enforcement.router,        prefix="/enforcement",        tags=["Enforcement"],       **PROTECTED)
+app.include_router(staff_roles.router,        prefix="/staff-roles",        tags=["Staff Roles"],       **PROTECTED)
+app.include_router(teacher_assignments.router,prefix="/teacher-assignments",tags=["Teacher Assignments"], **PROTECTED)
+app.include_router(attendance_confirmations.router, prefix="/attendance-confirmations", tags=["Attendance Confirmations"], **PROTECTED)
+app.include_router(scheme_of_work.router,     prefix="/scheme-of-work",     tags=["Scheme Of Work"],    **PROTECTED)
+app.include_router(homework_logs.router,      prefix="/homework-logs",      tags=["Homework Logs"],     **PROTECTED)

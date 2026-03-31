@@ -3,15 +3,23 @@
 USE sabi_db;
 
 CREATE TABLE IF NOT EXISTS staff_roles (
-    id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    teacher_id  INT UNSIGNED NOT NULL,
-    role        ENUM('principal','hr','admin','hod') NOT NULL,
-    is_active   BOOLEAN NOT NULL DEFAULT TRUE,
-    assigned_on DATE NOT NULL,
-    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    teacher_id     INT UNSIGNED NOT NULL,
+    role           ENUM('principal','vice_principal','hr','admin','hod','class_teacher','year_tutor') NOT NULL,
+    subject_scope  VARCHAR(100) NULL,
+    class_scope    VARCHAR(50) NULL,
+    level_scope    VARCHAR(100) NULL,
+    is_active      BOOLEAN NOT NULL DEFAULT TRUE,
+    assigned_by    VARCHAR(150) NULL,
+    notes          TEXT NULL,
+    assigned_on    DATE NOT NULL,
+    created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (teacher_id) REFERENCES teachers(id),
-    INDEX idx_role_active (role, is_active)
-) COMMENT 'Designates principal, HR, admin, and HOD routing roles.';
+    UNIQUE KEY uq_teacher_role_scope (teacher_id, role, subject_scope, class_scope, level_scope),
+    INDEX idx_role (role, is_active),
+    INDEX idx_subject (subject_scope, role)
+) COMMENT 'Designates leadership and scoped routing roles for OpenClaw workflows.';
 
 CREATE TABLE IF NOT EXISTS teacher_assignments (
     id                    INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
