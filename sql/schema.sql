@@ -552,3 +552,7 @@ CREATE TABLE kpi_scores (
 -- =============================================================================
 -- END OF SCHEMA
 -- =============================================================================
+
+-- Enforcement tables are maintained in a dedicated migration file so the
+-- deferred accountability system can be rolled out independently:
+-- sql/add_enforcement_tables.sql

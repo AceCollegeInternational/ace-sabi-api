@@ -7,6 +7,7 @@ Sabi holds a lightweight mirror with Telegram IDs and Sabi-specific fields.
 Endpoints:
     GET   /teachers                   list all active teachers
     GET   /teachers/{id}              single teacher with KPI summary
+    GET   /teachers/{id}/subjects     teaching subjects/classes from teacher_assignments
     PATCH /teachers/{id}/telegram     set or update a teacher's Telegram ID
     POST  /teachers/sync              upsert from enterprise DB
     GET   /teachers/{id}/kpi/history  all past KPI scores for a teacher
@@ -19,6 +20,21 @@ from pydantic import BaseModel
 from database.connections import get_sabi, get_enterprise
 
 router = APIRouter()
+
+
+def _normalize_employment_type(raw: Optional[str]) -> str:
+    """Map enterprise employment labels to the sabi_db ENUM values."""
+    value = (raw or "").strip().lower()
+    mapping = {
+        "regular": "full_time",
+        "full time": "full_time",
+        "full_time": "full_time",
+        "parttime": "part_time",
+        "part time": "part_time",
+        "part_time": "part_time",
+        "contract": "contract",
+    }
+    return mapping.get(value, "full_time")
 
 
 # =============================================================================
@@ -124,6 +140,59 @@ def get_teacher(teacher_id: int):
     return teacher
 
 
+@router.get("/{teacher_id}/subjects")
+def get_teacher_subjects(teacher_id: int, term_id: Optional[int] = None):
+    """
+    Return subjects (and classes) taught by a teacher from teacher_assignments.
+    If term_id is not provided, uses the current term when available.
+    """
+    with get_sabi() as (_, cur):
+        _require_teacher(cur, teacher_id)
+
+        resolved_term_id = term_id
+        if resolved_term_id is None:
+            cur.execute("SELECT id FROM academic_terms WHERE is_current = TRUE LIMIT 1")
+            row = cur.fetchone()
+            if row:
+                resolved_term_id = row["id"]
+
+        if resolved_term_id is not None:
+            cur.execute("SELECT id FROM academic_terms WHERE id = %s", (resolved_term_id,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Term not found.")
+            cur.execute(
+                """
+                SELECT subject_name, class_name, enterprise_subject_id, enterprise_class_id
+                FROM   teacher_assignments
+                WHERE  teacher_id = %s
+                AND    term_id = %s
+                ORDER  BY subject_name, class_name
+                """,
+                (teacher_id, resolved_term_id),
+            )
+            rows = cur.fetchall()
+        else:
+            cur.execute(
+                """
+                SELECT subject_name, class_name, enterprise_subject_id, enterprise_class_id, term_id
+                FROM   teacher_assignments
+                WHERE  teacher_id = %s
+                ORDER  BY term_id DESC, subject_name, class_name
+                """,
+                (teacher_id,),
+            )
+            rows = cur.fetchall()
+
+    unique_subjects = sorted({r["subject_name"] for r in rows if r.get("subject_name")})
+    return {
+        "teacher_id": teacher_id,
+        "term_id": resolved_term_id,
+        "source": "teacher_assignments",
+        "subjects": unique_subjects,
+        "assignments": rows,
+    }
+
+
 @router.patch("/{teacher_id}/telegram")
 def update_telegram_id(teacher_id: int, body: TelegramUpdate):
     """
@@ -215,7 +284,7 @@ def sync_from_enterprise():
                     staff["first_name"], staff["last_name"],
                     staff["email"], staff.get("phone"),
                     staff.get("subject_primary"), staff.get("subject_secondary"),
-                    staff.get("employment_type", "full_time"),
+                    _normalize_employment_type(staff.get("employment_type")),
                     staff["date_joined"], staff["enterprise_id"]
                 ))
                 updated += 1
@@ -229,7 +298,8 @@ def sync_from_enterprise():
                     staff["enterprise_id"], staff["first_name"], staff["last_name"],
                     staff["email"], staff.get("phone"),
                     staff.get("subject_primary"), staff.get("subject_secondary"),
-                    {"Regular": "full_time", "Parttime": "part_time"}.get(staff.get("employment_type"), "full_time"), staff["date_joined"]
+                    _normalize_employment_type(staff.get("employment_type")),
+                    staff["date_joined"]
                 ))
                 inserted += 1
 
