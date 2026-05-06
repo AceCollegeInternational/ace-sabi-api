@@ -353,6 +353,8 @@ class EnforcementEngine:
 
     def _check_result_upload(self, term: dict[str, Any]) -> list[ViolationCandidate]:
         candidates: list[ViolationCandidate] = []
+        academic_session = int(term["academic_year"].split("/")[0])
+        term_of_session  = int(term["term_number"])
         with get_sabi() as (_, cur):
             cur.execute(
                 """
