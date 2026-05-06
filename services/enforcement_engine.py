@@ -192,6 +192,17 @@ class EnforcementEngine:
         }
 
     def _build_stage_message(self, stage: str, rule: dict[str, Any], ctx: MessageContext, candidate: ViolationCandidate) -> str:
+        # For teacher_lateness, the message is pre-rendered in metadata.
+        # Use it directly regardless of stage — the lateness_policy table
+        # controls the exact wording per cumulative count.
+        if (
+            candidate is not None
+            and candidate.rule_key == "teacher_lateness"
+            and candidate.metadata
+            and candidate.metadata.get("override_message")
+        ):
+            return candidate.metadata["override_message"]
+
         if stage == "reminder":
             return self.builder.gentle_reminder(ctx, rule.get("reminder_message"))
         if stage == "due_today":
@@ -592,35 +603,114 @@ class EnforcementEngine:
         ]
 
     def _check_teacher_lateness(self, term: dict[str, Any]) -> list[ViolationCandidate]:
-        since = date.today() - timedelta(days=14)
+        """
+        Three-tier progressive lateness enforcement.
+
+        Level 1 — Occasional  : cumulative count 1-3  (teacher message only)
+        Level 2 — Frequent    : cumulative count 4-9  (principal + HR notified)
+        Level 3 — Habitual    : cumulative count 10+  (disciplinary query + penalty flag)
+
+        Fires once per teacher per late arrival detected today.
+        Message template and action flags are read from sabi_db.lateness_policy
+        keyed on the teacher's cumulative term late count.
+        """
+        today     = date.today()
+        candidates: list[ViolationCandidate] = []
+
+        # ── Step 1: Load policy table into a dict keyed by late_count ───────────
+        policy: dict[int, dict[str, Any]] = {}
         with get_sabi() as (_, cur):
-            cur.execute(
-                """
-                SELECT teacher_id,
-                       CONCAT(t.first_name, ' ', t.last_name) AS teacher_name,
-                       COUNT(*) AS late_count
-                FROM teacher_attendance ta
-                JOIN teachers t ON t.id = ta.teacher_id
-                WHERE ta.term_id = %s
-                  AND ta.log_date >= %s
-                  AND ta.status = 'late'
-                GROUP BY teacher_id, t.first_name, t.last_name
-                HAVING late_count >= 3
-                """,
-                (term["id"], since),
-            )
-            rows = cur.fetchall()
-        return [
-            ViolationCandidate(
-                rule_key="teacher_lateness",
-                teacher_id=row["teacher_id"],
-                teacher_name=row["teacher_name"],
-                term_id=term["id"],
-                reference=f"{row['late_count']} late arrivals in rolling window",
-                deadline=date.today(),
-            )
-            for row in rows
-        ]
+            cur.execute("""
+                SELECT late_count, level_name, message_template,
+                       notify_principal, notify_hr,
+                       draft_warning, draft_query, set_penalty_flag
+                FROM   lateness_policy
+                WHERE  is_active = 1
+                ORDER  BY late_count ASC
+            """)
+            for row in cur.fetchall():
+                policy[row["late_count"]] = row
+
+        if not policy:
+            logger.warning("lateness_policy table is empty or all rows inactive — skipping lateness check.")
+            return []
+
+        max_policy_count = max(policy.keys())
+
+        # ── Step 2: Find teachers who were late TODAY ────────────────────────────
+        with get_sabi() as (_, cur):
+            cur.execute("""
+                SELECT ta.teacher_id,
+                       CONCAT(t.first_name, ' ', t.last_name) AS teacher_name
+                FROM   teacher_attendance ta
+                JOIN   teachers t ON t.id = ta.teacher_id
+                WHERE  ta.term_id  = %s
+                AND    ta.log_date = %s
+                AND    ta.status   = 'late'
+            """, (term["id"], today))
+            late_today = cur.fetchall()
+
+        if not late_today:
+            return []
+
+        # ── Step 3: For each teacher late today, get their cumulative term count ─
+        with get_sabi() as (_, cur):
+            for row in late_today:
+                cur.execute("""
+                    SELECT COUNT(*) AS total_late
+                    FROM   teacher_attendance
+                    WHERE  teacher_id = %s
+                    AND    term_id    = %s
+                    AND    status     = 'late'
+                """, (row["teacher_id"], term["id"]))
+                count_row   = cur.fetchone()
+                term_count  = count_row["total_late"] if count_row else 1
+
+                # Look up the policy row for this count.
+                # If count exceeds max seeded row, use the max row (habitual continues).
+                lookup_count = min(term_count, max_policy_count)
+                pol = policy.get(lookup_count)
+
+                if not pol:
+                    # No policy row for this count — skip silently
+                    continue
+
+                # Build the message by substituting {teacher_name}
+                message = pol["message_template"].replace(
+                    "{teacher_name}", row["teacher_name"]
+                )
+
+                # Encode count and date in reference so each incident is a unique log entry
+                reference = (
+                    f"Late arrival #{term_count} on {today.isoformat()} "
+                    f"[{pol['level_name']}]"
+                )
+
+                # Build metadata — _process_candidate and the cron job consumer use this
+                metadata: dict[str, Any] = {
+                    "term_late_count":  term_count,
+                    "level_name":       pol["level_name"],
+                    "notify_principal": bool(pol["notify_principal"]),
+                    "notify_hr":        bool(pol["notify_hr"]),
+                    "draft_warning":    bool(pol["draft_warning"]),
+                    "draft_query":      bool(pol["draft_query"]),
+                    "set_penalty_flag": bool(pol["set_penalty_flag"]),
+                    "override_message": message,   # pre-rendered — use as-is
+                }
+
+                candidates.append(
+                    ViolationCandidate(
+                        rule_key="teacher_lateness",
+                        teacher_id=row["teacher_id"],
+                        teacher_name=row["teacher_name"],
+                        term_id=term["id"],
+                        reference=reference,
+                        deadline=today,
+                        metadata=metadata,
+                    )
+                )
+
+        return candidates
 
     def _check_absenteeism(self, term: dict[str, Any]) -> list[ViolationCandidate]:
         with get_sabi() as (_, cur):
