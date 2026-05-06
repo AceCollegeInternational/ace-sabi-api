@@ -153,6 +153,10 @@ class EnforcementEngine:
         if not stage_info:
             return None
 
+        cur.execute("SELECT telegram_id FROM teachers WHERE id = %s", (candidate.teacher_id,))
+        teacher_row = cur.fetchone() or {}
+        telegram_id = teacher_row.get("telegram_id")
+
         ctx = MessageContext(
             teacher_name=candidate.teacher_name,
             rule_name=rule["rule_name"],
@@ -179,6 +183,7 @@ class EnforcementEngine:
             "rule_key": rule["rule_key"],
             "teacher_id": candidate.teacher_id,
             "teacher_name": candidate.teacher_name,
+            "telegram_id": telegram_id,
             "reference": candidate.reference,
             "stage": stage_info["stage"],
             "message": message,
