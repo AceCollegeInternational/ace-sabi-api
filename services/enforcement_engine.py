@@ -350,36 +350,27 @@ class EnforcementEngine:
                 )
                 for row in cur.fetchall()
             ]
-
+    
     def _check_result_upload(self, term: dict[str, Any]) -> list[ViolationCandidate]:
         candidates: list[ViolationCandidate] = []
         today = date.today()
         start = term["start_date"]
+        term_end = term["end_date"]
         academic_session = int(term["academic_year"].split("/")[0])
         term_of_session  = int(term["term_number"])
 
-        # Assessment deadlines — Friday of week 4, 7, 10 and Tuesday of week 13
-        # Week N starts on start_date + (N-1)*7 days
         def week_friday(n: int) -> date:
             week_start = start + timedelta(days=(n - 1) * 7)
-            # Friday = week_start + 4 days (Monday=0)
             return week_start + timedelta(days=(4 - week_start.weekday()) % 7 + (
                 7 if week_start.weekday() > 4 else 0
-            ))
-
-        def week_tuesday(n: int) -> date:
-            week_start = start + timedelta(days=(n - 1) * 7)
-            return week_start + timedelta(days=(1 - week_start.weekday()) % 7 + (
-                7 if week_start.weekday() > 1 else 0
             ))
 
         assessment_deadlines = {
             "Test 1":      week_friday(4),
             "Test 2":      week_friday(7),
             "Test 3":      week_friday(10),
-            "Examination": week_tuesday(13),
+            "Examination": term_end - timedelta(days=2),
         }
-
         # Only check assessments whose deadline has already passed
         due_assessments = [
             name for name, deadline in assessment_deadlines.items()
