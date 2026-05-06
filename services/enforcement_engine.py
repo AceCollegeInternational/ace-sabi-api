@@ -353,8 +353,42 @@ class EnforcementEngine:
 
     def _check_result_upload(self, term: dict[str, Any]) -> list[ViolationCandidate]:
         candidates: list[ViolationCandidate] = []
+        today = date.today()
+        start = term["start_date"]
         academic_session = int(term["academic_year"].split("/")[0])
         term_of_session  = int(term["term_number"])
+
+        # Assessment deadlines — Friday of week 4, 7, 10 and Tuesday of week 13
+        # Week N starts on start_date + (N-1)*7 days
+        def week_friday(n: int) -> date:
+            week_start = start + timedelta(days=(n - 1) * 7)
+            # Friday = week_start + 4 days (Monday=0)
+            return week_start + timedelta(days=(4 - week_start.weekday()) % 7 + (
+                7 if week_start.weekday() > 4 else 0
+            ))
+
+        def week_tuesday(n: int) -> date:
+            week_start = start + timedelta(days=(n - 1) * 7)
+            return week_start + timedelta(days=(1 - week_start.weekday()) % 7 + (
+                7 if week_start.weekday() > 1 else 0
+            ))
+
+        assessment_deadlines = {
+            "Test 1":      week_friday(4),
+            "Test 2":      week_friday(7),
+            "Test 3":      week_friday(10),
+            "Examination": week_tuesday(13),
+        }
+
+        # Only check assessments whose deadline has already passed
+        due_assessments = [
+            name for name, deadline in assessment_deadlines.items()
+            if today >= deadline
+        ]
+
+        if not due_assessments:
+            return []
+
         with get_sabi() as (_, cur):
             cur.execute(
                 """
@@ -372,11 +406,15 @@ class EnforcementEngine:
             )
             assignments = cur.fetchall()
 
+        if not assignments:
+            return []
+
         try:
             with get_enterprise() as (_, ent_cur):
+                placeholders = ",".join(["%s"] * len(due_assessments))
                 for row in assignments:
                     ent_cur.execute(
-                        """
+                        f"""
                         SELECT COUNT(*) AS score_count
                         FROM   tb_student_score_registers ssr
                         JOIN   tb_academic_assessments aa ON aa.id = ssr.assessment_id
@@ -384,85 +422,137 @@ class EnforcementEngine:
                         AND    ssr.subject_id       = %s
                         AND    ssr.academic_session = %s
                         AND    ssr.term_of_session  = %s
-                        AND    aa.assessment_name IN ('Test 1','Test 2','Test 3','Examination')
+                        AND    aa.assessment_name IN ({placeholders})
                         """,
                         (
                             row["enterprise_class_id"],
                             row["enterprise_subject_id"],
                             academic_session,
                             term_of_session,
+                            *due_assessments,
                         ),
                     )
                     score_row = ent_cur.fetchone()
                     if not score_row or not score_row["score_count"]:
+                        due_str = ", ".join(due_assessments)
                         candidates.append(
                             ViolationCandidate(
                                 rule_key="result_upload",
                                 teacher_id=row["teacher_id"],
                                 teacher_name=row["teacher_name"],
                                 term_id=term["id"],
-                                reference=f"{row['subject_name']} {row['class_name']} scores",
-                                deadline=date.today(),
+                                reference=f"{row['subject_name']} {row['class_name']} — {due_str}",
+                                deadline=max(assessment_deadlines[a] for a in due_assessments),
                             )
                         )
         except (MySQLError, KeyError) as exc:
-            logger.warning("Enterprise result-upload check unavailable; returning mock placeholder. %s", exc)
-            candidates = [
-                ViolationCandidate(
-                    rule_key="result_upload",
-                    teacher_id=row["teacher_id"],
-                    teacher_name=row["teacher_name"],
-                    term_id=term["id"],
-                    reference=f"Mock pending upload for {row['subject_name']} {row['class_name']}",
-                    deadline=date.today(),
-                    metadata={"mock": True},
-                )
-                for row in assignments[:3]
-            ]
-        return candidates
+            logger.warning("Enterprise result-upload check failed: %s", exc)
 
+        return candidates
+    
     def _check_attendance_logging(self, term: dict[str, Any]) -> list[ViolationCandidate]:
         today = date.today()
+        academic_session = int(term["academic_year"].split("/")[0])
+        term_of_session  = int(term["term_number"])
+
+        # Fetch only class teachers from enterprise DB
+        # Class teacher = alternate_teacher_id on tb_academic_classes
+        try:
+            with get_enterprise() as (_, ent_cur):
+                ent_cur.execute("""
+                    SELECT DISTINCT alternate_teacher_id AS enterprise_id
+                    FROM   tb_academic_classes
+                    WHERE  academic_session     = %s
+                    AND    alternate_teacher_id != ''
+                    AND    alternate_teacher_id IS NOT NULL
+                """, (academic_session,))
+                class_teacher_enterprise_ids = [
+                    row["enterprise_id"] for row in ent_cur.fetchall()
+                ]
+        except Exception as exc:
+            logger.warning("Could not fetch class teachers from enterprise DB: %s", exc)
+            return []
+
+        if not class_teacher_enterprise_ids:
+            return []
+
+        placeholders = ",".join(["%s"] * len(class_teacher_enterprise_ids))
+
         if today.weekday() == 0:
+            # Monday — check enterprise DB for week row existence
+            try:
+                with get_enterprise() as (_, ent_cur):
+                    ent_cur.execute("""
+                        SELECT DISTINCT class_id
+                        FROM   tb_academic_class_morn_attendance
+                        WHERE  academic_session     = %s
+                        AND    term_of_session      = %s
+                        AND    attendance_start_date <= %s
+                        AND    attendance_end_date   >= %s
+                    """, (academic_session, term_of_session, today, today))
+                    logged_class_ids = {row["class_id"] for row in ent_cur.fetchall()}
+
+                with get_enterprise() as (_, ent_cur):
+                    ent_cur.execute(f"""
+                        SELECT DISTINCT
+                            ac.alternate_teacher_id AS enterprise_id
+                        FROM   tb_academic_classes ac
+                        WHERE  ac.academic_session     = %s
+                        AND    ac.alternate_teacher_id != ''
+                        AND    ac.alternate_teacher_id IS NOT NULL
+                        AND    ac.id NOT IN ({','.join(['%s'] * len(logged_class_ids)) if logged_class_ids else 'NULL'})
+                    """, (academic_session, *logged_class_ids) if logged_class_ids else (academic_session,))
+                    defaulting_enterprise_ids = [
+                        row["enterprise_id"] for row in ent_cur.fetchall()
+                    ]
+            except Exception as exc:
+                logger.warning("Monday attendance check failed: %s", exc)
+                return []
+
+            if not defaulting_enterprise_ids:
+                return []
+
+            eid_placeholders = ",".join(["%s"] * len(defaulting_enterprise_ids))
             with get_sabi() as (_, cur):
-                cur.execute(
-                    """
-                    SELECT t.id AS teacher_id,
-                           CONCAT(t.first_name, ' ', t.last_name) AS teacher_name
-                    FROM teachers t
-                    LEFT JOIN teacher_attendance ta
-                      ON ta.teacher_id = t.id AND ta.log_date = %s
-                    WHERE t.is_active = TRUE AND ta.id IS NULL
-                    """,
-                    (today,),
-                )
+                cur.execute(f"""
+                    SELECT id AS teacher_id,
+                           CONCAT(first_name, ' ', last_name) AS teacher_name
+                    FROM   teachers
+                    WHERE  enterprise_id IN ({eid_placeholders})
+                    AND    is_active = TRUE
+                """, tuple(defaulting_enterprise_ids))
                 rows = cur.fetchall()
+
             return [
                 ViolationCandidate(
                     rule_key="attendance_logging",
                     teacher_id=row["teacher_id"],
                     teacher_name=row["teacher_name"],
                     term_id=term["id"],
-                    reference=f"Attendance register for {today.isoformat()}",
+                    reference=f"Morning register for week of {today.isoformat()}",
                     deadline=today,
                 )
                 for row in rows
             ]
 
+        # Tuesday to Friday — check attendance_confirmations in sabi_db
         session = "morning" if datetime.now().time() <= time(12, 0) else "noon"
+
         with get_sabi() as (_, cur):
-            cur.execute(
-                """
+            cur.execute(f"""
                 SELECT t.id AS teacher_id,
                        CONCAT(t.first_name, ' ', t.last_name) AS teacher_name
-                FROM teachers t
+                FROM   teachers t
                 LEFT JOIN attendance_confirmations ac
-                  ON ac.teacher_id = t.id AND ac.confirm_date = %s AND ac.session = %s
-                WHERE t.is_active = TRUE AND ac.id IS NULL
-                """,
-                (today, session),
-            )
+                    ON  ac.teacher_id   = t.id
+                    AND ac.confirm_date = %s
+                    AND ac.session      = %s
+                WHERE  t.enterprise_id IN ({placeholders})
+                AND    t.is_active      = TRUE
+                AND    ac.id IS NULL
+            """, (today, session, *class_teacher_enterprise_ids))
             rows = cur.fetchall()
+
         return [
             ViolationCandidate(
                 rule_key="attendance_logging",
