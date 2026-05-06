@@ -378,10 +378,20 @@ class EnforcementEngine:
                     ent_cur.execute(
                         """
                         SELECT COUNT(*) AS score_count
-                        FROM tb_student_score_registers
-                        WHERE class_id = %s AND subject_id = %s AND teacher_id = %s
+                        FROM   tb_student_score_registers ssr
+                        JOIN   tb_academic_assessments aa ON aa.id = ssr.assessment_id
+                        WHERE  ssr.class_id         = %s
+                        AND    ssr.subject_id       = %s
+                        AND    ssr.academic_session = %s
+                        AND    ssr.term_of_session  = %s
+                        AND    aa.assessment_name IN ('Test 1','Test 2','Test 3','Examination')
                         """,
-                        (row["enterprise_class_id"], row["enterprise_subject_id"], row["teacher_id"]),
+                        (
+                            row["enterprise_class_id"],
+                            row["enterprise_subject_id"],
+                            academic_session,
+                            term_of_session,
+                        ),
                     )
                     score_row = ent_cur.fetchone()
                     if not score_row or not score_row["score_count"]:
