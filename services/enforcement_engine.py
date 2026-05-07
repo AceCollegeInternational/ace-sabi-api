@@ -316,9 +316,14 @@ class EnforcementEngine:
                 LEFT JOIN lesson_plan_submissions lp
                   ON lp.teacher_id = t.id AND lp.term_id = %s AND lp.week_number = %s
                 WHERE t.is_active = TRUE
+                  AND t.id IN (
+                      SELECT DISTINCT teacher_id
+                      FROM   teacher_assignments
+                      WHERE  term_id = %s
+                  )
                   AND (lp.id IS NULL OR lp.submitted_at IS NULL)
                 """,
-                (term["id"], week),
+                (term["id"], week, term["id"]),
             )
             return [
                 ViolationCandidate(
@@ -749,6 +754,9 @@ class EnforcementEngine:
     def _check_homework_giving(self, term: dict[str, Any]) -> list[ViolationCandidate]:
         today = date.today()
         week = max(1, min(20, ((today - term["start_date"]).days // 7) + 1))
+        # Do not enforce homework giving in Week 1 — teachers need time to settle
+        if week < 2:
+            return []
         deadline = term["start_date"] + timedelta(days=(week * 7) - 3)
         with get_sabi() as (_, cur):
             cur.execute(
