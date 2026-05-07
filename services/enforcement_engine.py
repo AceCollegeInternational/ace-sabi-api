@@ -189,8 +189,9 @@ class EnforcementEngine:
             "message": message,
             "deadline": ctx.deadline,
             "escalation_id": escalation_id,
+            "metadata": candidate.metadata,
         }
-
+    
     def _build_stage_message(self, stage: str, rule: dict[str, Any], ctx: MessageContext, candidate: ViolationCandidate) -> str:
         # For teacher_lateness, the message is pre-rendered in metadata.
         # Use it directly regardless of stage — the lateness_policy table
