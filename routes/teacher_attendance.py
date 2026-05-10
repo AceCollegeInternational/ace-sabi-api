@@ -41,7 +41,8 @@ class AttendanceEntry(BaseModel):
 class BulkAttendanceRequest(BaseModel):
     entries:  List[AttendanceEntry]
     term_id:  int
-
+    logged_by_teacher_id: Optional[int] = None
+    
 
 class SingleAttendanceRequest(AttendanceEntry):
     term_id:  int
@@ -123,6 +124,7 @@ def log_bulk(body: BulkAttendanceRequest):
     Log attendance for multiple teachers in a single call.
     Designed for the morning register: the admin sends one message with
     all present/absent/late statuses and OpenClaw posts them here.
+    logged_by_teacher_id resolves to the admin's full name automatically.
     Any entry that fails validation is reported in 'errors' but does not
     block the rest of the batch.
     """
@@ -134,7 +136,23 @@ def log_bulk(body: BulkAttendanceRequest):
 
     with get_sabi() as (_, cur):
         _require_term(cur, body.term_id)
+
+        # Resolve logged_by name from teacher_id if provided
+        logged_by_name: Optional[str] = None
+        if body.logged_by_teacher_id:
+            cur.execute("""
+                SELECT CONCAT(first_name, ' ', last_name) AS full_name
+                FROM   teachers
+                WHERE  id = %s AND is_active = TRUE
+            """, (body.logged_by_teacher_id,))
+            row = cur.fetchone()
+            if row:
+                logged_by_name = row["full_name"]
+
         for entry in body.entries:
+            # Apply resolved admin name to every entry
+            if logged_by_name and not entry.logged_by:
+                entry.logged_by = logged_by_name
             try:
                 _require_current_teacher(cur, entry.teacher_id)
                 _upsert_entry(cur, body.term_id, entry)
