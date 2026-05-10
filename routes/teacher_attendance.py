@@ -83,7 +83,7 @@ def _upsert_entry(cur, term_id: int, entry: AttendanceEntry):
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Invalid status '{entry.status}'. Must be one of {VALID_STATUSES}."
         )
-    minutes_late = _compute_minutes_late(entry.arrival_time, config.SCHOOL_START_TIME)
+    minutes_late = _compute_minutes_late(entry.arrival_time, config.SCHOOL_LATENESS_THRESHOLD)
 
     cur.execute("""
         INSERT INTO teacher_attendance
@@ -98,7 +98,7 @@ def _upsert_entry(cur, term_id: int, entry: AttendanceEntry):
             logged_by     = VALUES(logged_by)
     """, (
         entry.teacher_id, term_id, entry.log_date, entry.status,
-        entry.arrival_time, config.SCHOOL_START_TIME,
+        entry.arrival_time, config.SCHOOL_LATENESS_THRESHOLD,
         minutes_late, entry.notes, entry.logged_by
     ))
 

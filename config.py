@@ -78,6 +78,7 @@ BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 
 # Expected teacher arrival time (24-hour). Used for punctuality calculations.
 SCHOOL_START_TIME = os.getenv("SCHOOL_START_TIME", "07:30")
+SCHOOL_LATENESS_THRESHOLD = os.getenv("SCHOOL_LATENESS_THRESHOLD", "07:40")
 
 # Default marking policy: teachers should return marked work within this many days.
 # Can be overridden per assessment in marking_timeliness table.
