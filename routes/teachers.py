@@ -225,42 +225,58 @@ def update_telegram_id(teacher_id: int, body: TelegramUpdate):
 def sync_from_enterprise():
     """
     Pull the staff list from the enterprise DB and upsert into sabi_db.teachers.
+    Syncs three categories based on enterprise DB flags:
+      - teaching : academic_active = 1 only
+      - office   : office_active   = 1 only
+      - both     : both flags set to 1
 
     - New staff records are inserted.
-    - Existing staff (matched on enterprise_id) have name/email/subject updated.
-    - Staff no longer in the enterprise active list are marked is_active = FALSE.
-
+    - Existing staff (matched on enterprise_id) have details updated.
+    - Staff no longer in the active list are marked is_active = FALSE.
     Returns a summary: inserted, updated, deactivated counts.
     """
     # ── 1. Read from enterprise DB ───────────────────────────────────────────
-    # Adjust the SELECT below to match your enterprise DB column names exactly.
     with get_enterprise() as (_, cur):
         cur.execute("""
             SELECT
-                id            AS enterprise_id,
+                id                      AS enterprise_id,
                 first_name,
                 last_name,
                 faculty_email_address_1 AS email,
                 faculty_phone_no_1      AS phone,
                 employment_type,
-                employment_date         AS date_joined
+                employment_date         AS date_joined,
+                academic_active,
+                office_active
             FROM   tb_faculty_registrations
-            WHERE  academic_active = 1
+            WHERE  (academic_active = 1 OR office_active = 1)
             AND    employment_status = 'Active'
         """)
         enterprise_staff = cur.fetchall()
 
     if not enterprise_staff:
-        return {"message": "No active staff found in enterprise DB.", "inserted": 0, "updated": 0, "deactivated": 0}
+        return {
+            "message": "No active staff found in enterprise DB.",
+            "inserted": 0, "updated": 0, "deactivated": 0
+        }
 
     enterprise_ids = {s["enterprise_id"] for s in enterprise_staff}
-
     inserted = 0
     updated  = 0
 
     # ── 2. Upsert into Sabi ──────────────────────────────────────────────────
     with get_sabi() as (_, cur):
         for staff in enterprise_staff:
+            # Determine staff_type from enterprise flags
+            is_academic = bool(staff.get("academic_active"))
+            is_office   = bool(staff.get("office_active"))
+            if is_academic and is_office:
+                staff_type = "both"
+            elif is_office:
+                staff_type = "office"
+            else:
+                staff_type = "teaching"
+
             cur.execute(
                 "SELECT id FROM teachers WHERE enterprise_id = %s",
                 (staff["enterprise_id"],)
@@ -278,6 +294,7 @@ def sync_from_enterprise():
                         subject_secondary = %s,
                         employment_type   = %s,
                         date_joined       = %s,
+                        staff_type        = %s,
                         is_active         = TRUE
                     WHERE enterprise_id = %s
                 """, (
@@ -285,44 +302,30 @@ def sync_from_enterprise():
                     staff["email"], staff.get("phone"),
                     staff.get("subject_primary"), staff.get("subject_secondary"),
                     _normalize_employment_type(staff.get("employment_type")),
-                    staff["date_joined"], staff["enterprise_id"]
+                    staff["date_joined"],
+                    staff_type,
+                    staff["enterprise_id"],
                 ))
                 updated += 1
             else:
                 cur.execute("""
-                    INSERT INTO teachers
-                        (enterprise_id, first_name, last_name, email, phone,
-                         subject_primary, subject_secondary, employment_type, date_joined)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO teachers (
+                        enterprise_id, first_name, last_name,
+                        email, phone,
+                        subject_primary, subject_secondary,
+                        employment_type, date_joined,
+                        staff_type, is_active
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE)
                 """, (
-                    staff["enterprise_id"], staff["first_name"], staff["last_name"],
+                    staff["enterprise_id"],
+                    staff["first_name"], staff["last_name"],
                     staff["email"], staff.get("phone"),
                     staff.get("subject_primary"), staff.get("subject_secondary"),
                     _normalize_employment_type(staff.get("employment_type")),
-                    staff["date_joined"]
+                    staff["date_joined"],
+                    staff_type,
                 ))
                 inserted += 1
-
-        # ── 3. Deactivate staff no longer in enterprise ──────────────────────
-        if enterprise_ids:
-            placeholders = ",".join(["%s"] * len(enterprise_ids))
-            cur.execute(f"""
-                UPDATE teachers
-                SET    is_active = FALSE
-                WHERE  enterprise_id NOT IN ({placeholders})
-                AND    is_active = TRUE
-            """, tuple(enterprise_ids))
-            deactivated = cur.rowcount
-        else:
-            deactivated = 0
-
-    return {
-        "message":     "Sync complete.",
-        "inserted":    inserted,
-        "updated":     updated,
-        "deactivated": deactivated,
-    }
-
 
 @router.get("/{teacher_id}/kpi/history")
 def get_kpi_history(teacher_id: int):
