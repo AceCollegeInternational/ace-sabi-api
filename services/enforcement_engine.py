@@ -305,7 +305,8 @@ class EnforcementEngine:
 
     def _check_lesson_plan_submission(self, term: dict[str, Any]) -> list[ViolationCandidate]:
         today = date.today()
-        week = max(1, min(20, ((today - term["start_date"]).days // 7) + 1))
+        current_week = max(1, min(20, ((today - term["start_date"]).days // 7) + 1))
+        week = min(current_week + 1, 20)  # Teachers submit next week's plan
         deadline = term["start_date"] + timedelta(days=(week * 7) - 3)
         with get_sabi() as (_, cur):
             cur.execute(
