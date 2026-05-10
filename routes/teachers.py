@@ -309,13 +309,11 @@ def sync_from_enterprise():
                 updated += 1
             else:
                 cur.execute("""
-                    INSERT INTO teachers (
-                        enterprise_id, first_name, last_name,
-                        email, phone,
-                        subject_primary, subject_secondary,
-                        employment_type, date_joined,
-                        staff_type, is_active
-                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE)
+                    INSERT INTO teachers
+                        (enterprise_id, first_name, last_name, email, phone,
+                         subject_primary, subject_secondary, employment_type,
+                         date_joined, staff_type)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     staff["enterprise_id"],
                     staff["first_name"], staff["last_name"],
@@ -326,6 +324,26 @@ def sync_from_enterprise():
                     staff_type,
                 ))
                 inserted += 1
+
+        # ── 3. Deactivate staff no longer in enterprise ──────────────────────
+        if enterprise_ids:
+            placeholders = ",".join(["%s"] * len(enterprise_ids))
+            cur.execute(f"""
+                UPDATE teachers
+                SET    is_active = FALSE
+                WHERE  enterprise_id NOT IN ({placeholders})
+                AND    is_active = TRUE
+            """, tuple(enterprise_ids))
+            deactivated = cur.rowcount
+        else:
+            deactivated = 0
+
+    return {
+        "message":     "Sync complete.",
+        "inserted":    inserted,
+        "updated":     updated,
+        "deactivated": deactivated,
+    }
 
 @router.get("/{teacher_id}/kpi/history")
 def get_kpi_history(teacher_id: int):
