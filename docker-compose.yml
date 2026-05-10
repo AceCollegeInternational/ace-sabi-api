@@ -1,17 +1,18 @@
 services:
-
   sabi-api:
     build: .
     container_name: sabi-api
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8000:8000"   # bind to localhost only — Nginx sits in front
+      - "8000:8000"  # Removed 127.0.0.1 so the Docker Bridge can see it
     env_file:
       - .env
     networks:
       - sabi-net
+      - n8n_default  # Add this so Caddy can reach it
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # Use python -c since we found out earlier 'curl' isn't in the image
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -20,3 +21,5 @@ services:
 networks:
   sabi-net:
     driver: bridge
+  n8n_default:
+    external: true  # This connects to your existing n8n/Caddy network

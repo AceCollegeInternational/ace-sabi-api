@@ -11,3 +11,5 @@ __pycache__/
 
 # Saved files
 *.save*
+assignments.json
+sql/*.bak
