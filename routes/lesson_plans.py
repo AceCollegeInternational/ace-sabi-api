@@ -38,31 +38,33 @@ class PlanReview(BaseModel):
 # =============================================================================
 # ROUTES
 # =============================================================================
-
 @router.post("", status_code=status.HTTP_201_CREATED)
 def submit_plan(body: PlanSubmission):
     """
     Record a lesson plan submission.
-    If a record for this teacher/term/week already exists it is updated
-    (teacher re-submitted a corrected plan).
-    is_on_time is computed automatically from the submission timestamp vs due_date.
+    If a record for this teacher/term/week already exists it is updated.
+    is_on_time is computed automatically from submission timestamp vs due_date.
+    After recording, notifies the HOD for the teacher's department.
     """
     if not (1 <= body.week_number <= 20):
         raise HTTPException(status_code=422, detail="week_number must be between 1 and 20.")
 
     with get_sabi() as (_, cur):
-        # Validate teacher and term exist
-        cur.execute("SELECT id FROM teachers WHERE id = %s AND is_active = TRUE",
-                    (body.teacher_id,))
-        if not cur.fetchone():
+        cur.execute("""
+            SELECT first_name, last_name
+            FROM   teachers
+            WHERE  id = %s AND is_active = TRUE
+        """, (body.teacher_id,))
+        teacher = cur.fetchone()
+        if not teacher:
             raise HTTPException(status_code=404, detail="Active teacher not found.")
 
         cur.execute("SELECT id FROM academic_terms WHERE id = %s", (body.term_id,))
         if not cur.fetchone():
             raise HTTPException(status_code=404, detail="Term not found.")
 
-        now      = date.today()
-        on_time  = (now <= body.due_date)
+        now     = date.today()
+        on_time = (now <= body.due_date)
 
         cur.execute("""
             INSERT INTO lesson_plan_submissions
@@ -76,13 +78,61 @@ def submit_plan(body: PlanSubmission):
                 notes          = VALUES(notes)
         """, (body.teacher_id, body.term_id, body.week_number,
               body.due_date, on_time, body.file_reference, body.notes))
-
         record_id = cur.lastrowid
 
+        # Get teacher's subjects from teacher_assignments for current term
+        cur.execute("""
+            SELECT DISTINCT subject_name
+            FROM   teacher_assignments
+            WHERE  teacher_id = %s AND term_id = %s
+            LIMIT  1
+        """, (body.teacher_id, body.term_id))
+        assignment = cur.fetchone()
+        subject = assignment["subject_name"] if assignment else None
+
+    # Build HOD notification
+    teacher_name  = f"{teacher['first_name']} {teacher['last_name']}"
+    hod_notification = None
+
+    if subject:
+        from routes.staff_roles import get_hod_for_subject
+        hod = get_hod_for_subject(subject)
+        if hod and hod.get("telegram_id"):
+            timing   = "on time ✅" if on_time else "LATE ⚠️"
+            file_line = (
+                f"\n📎 {body.file_reference}"
+                if body.file_reference
+                else "\n⚠️ No file link attached."
+            )
+            hod_notification = {
+                "telegram_id": hod["telegram_id"],
+                "hod_name":    f"{hod['first_name']} {hod['last_name']}",
+                "message": (
+                    f"📝 *Lesson Plan Submitted*\n\n"
+                    f"*Teacher:* {teacher_name}\n"
+                    f"*Subject:* {subject}\n"
+                    f"*Week:* {body.week_number}\n"
+                    f"*Status:* {timing}"
+                    f"{file_line}\n\n"
+                    f"To review, reply:\n"
+                    f"`/review {record_id} on-topic` or "
+                    f"`/review {record_id} off-topic`"
+                ),
+            }
+        elif hod and not hod.get("telegram_id"):
+            hod_notification = {
+                "telegram_id": None,
+                "warning": (
+                    f"HOD for {hod.get('department')} department has no "
+                    "Telegram ID linked. Notification not sent."
+                ),
+            }
+
     return {
-        "id":        record_id,
-        "is_on_time": on_time,
-        "message":   "Plan submission recorded."
+        "id":               record_id,
+        "is_on_time":       on_time,
+        "message":          "Plan submission recorded.",
+        "hod_notification": hod_notification,
     }
 
 
