@@ -409,105 +409,105 @@ def compute_kpi(teacher_id: int, term_id: int) -> dict:
         prev_row = sabi_cur.fetchone()
         prev_score = float(prev_row["total_score"]) if prev_row else None
 
-    # ── Fetch from enterprise and Moodle (outside sabi context) ─────────────
-    comprehension  = None
-    value_added    = None
-    learning_ret   = None
-
-    if enterprise_id:
-        with get_enterprise() as (_, ent_cur):
-            comprehension = _fetch_comprehension_score(ent_cur, enterprise_id, academic_session, term_of_session)
-
-        with get_moodle() as (_, moodle_cur):
-            value_added  = _fetch_value_added(moodle_cur, enterprise_id, term_id)
-            learning_ret = _fetch_learning_retention(moodle_cur, enterprise_id, term_id)
-    else:
-        notes.append("No enterprise_id on teacher — comprehension, value-added, "
-                     "retention, and parent engagement scores set to 0.")
-
-    # ── Normalise raw scores ─────────────────────────────────────────────────
-    if comprehension is None:
-        notes.append("comprehension_score: no data from enterprise DB.")
-    if value_added is None:
-        notes.append("value_added_progress: no data from Moodle.")
-    if learning_ret is None:
-        notes.append("learning_retention: no data from Moodle.")
-    if obs_avg is None:
-        notes.append("observation_score: no observations recorded this term.")
-    if sf_avg is None:
-        notes.append("student_feedback: no qualifying feedback this term.")
-
-    raw = {
-        "comprehension_score":     _pct_to_score(comprehension),
-        "value_added_progress":    _pct_to_score(value_added),
-        "learning_retention":      _pct_to_score(learning_ret),
-        "observation_score":       _pct_to_score(obs_avg),
-        "punctuality":             _pct_to_score(att.get("punctuality_pct")),
-        "lesson_plan_compliance":  _pct_to_score(lp.get("on_time_pct")),
-        "teacher_attendance":      _pct_to_score(att.get("attendance_pct")),
-        "marking_timeliness":      _marking_score(
-                                       mk.get("avg_days"),
-                                       int(mk.get("policy_days") or config.DEFAULT_MARKING_POLICY_DAYS)
-                                   ),
-        "pd_quality_score":        _pd_score(pd_hrs),
-        "peer_mentorship":         _mentorship_score(mentor_ct),
-        "curriculum_contribution": _contribution_score(
-                                       int(contrib.get("cnt", 0)),
-                                       int(contrib.get("adoptions", 0))
-                                   ),
-        "pastoral_logs":           _pastoral_score(pastoral),
-        "student_feedback":        _pct_to_score(sf_avg),
-        "incident_rate":           _invert_score(inc_rate),
-    }
-
-    # ── Apply lateness penalty to punctuality score ──────────────────────────
-    # Level 2 (4–9 late arrivals): deduction = (late_count - 3) * 0.5 points
-    # Level 3 (10+ late arrivals): deduction = min((late_count - 9), 8) points
-    sabi_cur.execute("""
-        SELECT COUNT(*) AS late_count
-        FROM   teacher_attendance
-        WHERE  teacher_id = %s
-        AND    term_id    = %s
-        AND    status     = 'late'
-    """, (teacher_id, term_id))
-    late_row   = sabi_cur.fetchone()
-    late_count = int(late_row["late_count"]) if late_row else 0
-
-    if late_count >= 10:
-        penalty_pts = min(late_count - 9, 8)
-    elif late_count >= 4:
-        penalty_pts = (late_count - 3) * 0.5
-    else:
-        penalty_pts = 0.0
-
-    if penalty_pts > 0:
-        punctuality_weight = weights.get("punctuality", 8.0)
-        if punctuality_weight > 0:
-            raw_deduction = penalty_pts * 100.0 / punctuality_weight
-            raw["punctuality"] = max(0.0, raw["punctuality"] - raw_deduction)
-            notes.append(
-                f"Lateness penalty applied: {late_count} late arrivals, "
-                f"{penalty_pts} KPI points deducted from punctuality."
-            )
+        # ── Fetch from enterprise and Moodle (outside sabi context) ─────────────
+        comprehension  = None
+        value_added    = None
+        learning_ret   = None
+        
+        if enterprise_id:
+            with get_enterprise() as (_, ent_cur):
+                comprehension = _fetch_comprehension_score(ent_cur, enterprise_id, academic_session, term_of_session)
+                
+            with get_moodle() as (_, moodle_cur):
+                value_added  = _fetch_value_added(moodle_cur, enterprise_id, term_id)
+                learning_ret = _fetch_learning_retention(moodle_cur, enterprise_id, term_id)
+        else:
+            notes.append("No enterprise_id on teacher — comprehension, value-added, "
+                         "retention, and parent engagement scores set to 0.")
     
-    # ── Apply weights ────────────────────────────────────────────────────────
-    # weighted contribution = raw_score × weight / 100
-    weighted = {k: raw[k] * weights.get(k, 0.0) / 100.0 for k in raw}
+        # ── Normalise raw scores ─────────────────────────────────────────────────
+        if comprehension is None:
+            notes.append("comprehension_score: no data from enterprise DB.")
+        if value_added is None:
+            notes.append("value_added_progress: no data from Moodle.")
+        if learning_ret is None:
+            notes.append("learning_retention: no data from Moodle.")
+        if obs_avg is None:
+            notes.append("observation_score: no observations recorded this term.")
+        if sf_avg is None:
+            notes.append("student_feedback: no qualifying feedback this term.")
 
-    # Category subtotals
-    academic    = sum(weighted[k] for k in
-                      ["comprehension_score","value_added_progress",
-                       "learning_retention","observation_score"])
-    reliability = sum(weighted[k] for k in
-                      ["punctuality","lesson_plan_compliance",
-                       "teacher_attendance","marking_timeliness"])
-    growth      = sum(weighted[k] for k in
-                      ["pd_quality_score","peer_mentorship","curriculum_contribution"])
-    care        = sum(weighted[k] for k in
-                      ["pastoral_logs","student_feedback","incident_rate"])
+        raw = {
+            "comprehension_score":     _pct_to_score(comprehension),
+            "value_added_progress":    _pct_to_score(value_added),
+            "learning_retention":      _pct_to_score(learning_ret),
+            "observation_score":       _pct_to_score(obs_avg),
+            "punctuality":             _pct_to_score(att.get("punctuality_pct")),
+            "lesson_plan_compliance":  _pct_to_score(lp.get("on_time_pct")),
+            "teacher_attendance":      _pct_to_score(att.get("attendance_pct")),
+            "marking_timeliness":      _marking_score(
+                                           mk.get("avg_days"),
+                                           int(mk.get("policy_days") or config.DEFAULT_MARKING_POLICY_DAYS)
+                                       ),
+            "pd_quality_score":        _pd_score(pd_hrs),
+            "peer_mentorship":         _mentorship_score(mentor_ct),
+            "curriculum_contribution": _contribution_score(
+                                           int(contrib.get("cnt", 0)),
+                                           int(contrib.get("adoptions", 0))
+                                       ),
+            "pastoral_logs":           _pastoral_score(pastoral),
+            "student_feedback":        _pct_to_score(sf_avg),
+            "incident_rate":           _invert_score(inc_rate),
+        }
+        
+        # ── Apply lateness penalty to punctuality score ──────────────────────────
+        # Level 2 (4–9 late arrivals): deduction = (late_count - 3) * 0.5 points
+        # Level 3 (10+ late arrivals): deduction = min((late_count - 9), 8) points
+        sabi_cur.execute("""
+            SELECT COUNT(*) AS late_count
+            FROM   teacher_attendance
+            WHERE  teacher_id = %s
+            AND    term_id    = %s
+            AND    status     = 'late'
+        """, (teacher_id, term_id))
+        late_row   = sabi_cur.fetchone()
+        late_count = int(late_row["late_count"]) if late_row else 0
+    
+        if late_count >= 10:
+            penalty_pts = min(late_count - 9, 8)
+        elif late_count >= 4:
+            penalty_pts = (late_count - 3) * 0.5
+        else:
+            penalty_pts = 0.0
+    
+        if penalty_pts > 0:
+            punctuality_weight = weights.get("punctuality", 8.0)
+            if punctuality_weight > 0:
+                raw_deduction = penalty_pts * 100.0 / punctuality_weight
+                raw["punctuality"] = max(0.0, raw["punctuality"] - raw_deduction)
+                notes.append(
+                    f"Lateness penalty applied: {late_count} late arrivals, "
+                    f"{penalty_pts} KPI points deducted from punctuality."
+                )
+        
+        # ── Apply weights ────────────────────────────────────────────────────────
+        # weighted contribution = raw_score × weight / 100
+        weighted = {k: raw[k] * weights.get(k, 0.0) / 100.0 for k in raw}
 
-    total = academic + reliability + growth + care
-    delta = round(total - prev_score, 3) if prev_score is not None else None
+        # Category subtotals
+        academic    = sum(weighted[k] for k in
+                          ["comprehension_score","value_added_progress",
+                           "learning_retention","observation_score"])
+        reliability = sum(weighted[k] for k in
+                          ["punctuality","lesson_plan_compliance",
+                           "teacher_attendance","marking_timeliness"])
+        growth      = sum(weighted[k] for k in
+                          ["pd_quality_score","peer_mentorship","curriculum_contribution"])
+        care        = sum(weighted[k] for k in
+                          ["pastoral_logs","student_feedback","incident_rate"])
+
+        total = academic + reliability + growth + care
+        delta = round(total - prev_score, 3) if prev_score is not None else None
 
     # ── Persist ──────────────────────────────────────────────────────────────
     with get_sabi() as (_, sabi_cur):
