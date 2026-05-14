@@ -460,6 +460,46 @@ def compute_kpi(teacher_id: int, term_id: int) -> dict:
         "incident_rate":           _invert_score(inc_rate),
     }
 
+# ── Apply lateness penalty to punctuality score ──────────────────────────
+    # Level 2 (4–9 late arrivals): deduction = (late_count - 3) * 0.5 points
+    # Level 3 (10+ late arrivals): deduction = min((late_count - 9), 8) points
+    # Deduction is applied to the raw punctuality score (0-100 scale)
+    # before weighting so the penalty is proportional to the index weight.
+    sabi_cur.execute("""
+        SELECT COUNT(*) AS late_count
+        FROM   teacher_attendance
+        WHERE  teacher_id = %s
+        AND    term_id    = %s
+        AND    status     = 'late'
+    """, (teacher_id, term_id))
+    late_row   = sabi_cur.fetchone()
+    late_count = int(late_row["late_count"]) if late_row else 0
+
+    if late_count >= 10:
+        # Level 3 — Habitual
+        # Each arrival beyond 9 deducts 1 point, capped at 8 points (max weight)
+        # Convert to 0-100 scale: 8 points on KPI = 100 raw score points
+        penalty_pts = min(late_count - 9, 8)
+    elif late_count >= 4:
+        # Level 2 — Frequent
+        penalty_pts = (late_count - 3) * 0.5
+    else:
+        penalty_pts = 0.0
+
+    if penalty_pts > 0:
+        # Convert KPI points to raw score deduction
+        # punctuality weight = 8.0 points max
+        # raw score is 0-100, weighted score = raw * 8 / 100
+        # so raw deduction = penalty_pts * 100 / 8
+        punctuality_weight = weights.get("punctuality", 8.0)
+        if punctuality_weight > 0:
+            raw_deduction = penalty_pts * 100.0 / punctuality_weight
+            raw["punctuality"] = max(0.0, raw["punctuality"] - raw_deduction)
+            notes.append(
+                f"Lateness penalty applied: {late_count} late arrivals, "
+                f"{penalty_pts} KPI points deducted from punctuality."
+            )
+    
     # ── Apply weights ────────────────────────────────────────────────────────
     # weighted contribution = raw_score × weight / 100
     weighted = {k: raw[k] * weights.get(k, 0.0) / 100.0 for k in raw}
