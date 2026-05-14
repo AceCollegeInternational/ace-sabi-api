@@ -2,7 +2,7 @@
 routes/homework_logs.py — weekly homework tracking.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, status
@@ -20,7 +20,7 @@ class HomeworkLogCreate(BaseModel):
     subject: str
     week_number: int
     given_on: date
-    due_date: date
+    due_date: Optional[date] = None
     description: Optional[str] = None
 
 
@@ -35,6 +35,13 @@ def log_homework(body: HomeworkLogCreate):
         cur.execute("SELECT id FROM academic_terms WHERE id=%s", (body.term_id,))
         if not cur.fetchone():
             raise HTTPException(status_code=404, detail="Term not found.")
+
+        # Auto-calculate due_date as Friday of the week given_on falls in
+        # This is the teacher's compliance deadline for logging homework
+        if body.due_date is None:
+            days_until_friday = (4 - body.given_on.weekday()) % 7
+            body.due_date = body.given_on + timedelta(days=days_until_friday)
+
         cur.execute(
             """
             INSERT INTO homework_logs
