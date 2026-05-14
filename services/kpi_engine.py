@@ -122,7 +122,7 @@ def _fetch_attendance_stats(cur, teacher_id: int, term_id: int) -> dict:
             AVG(CASE WHEN minutes_late > 0 THEN minutes_late END) AS avg_minutes_late,
             -- Punctuality: days present on time / days not on approved leave
             ROUND(
-                100.0 * SUM(status = 'present')
+                100.0 * SUM(status IN ('present', 'late'))
                 / NULLIF(SUM(status NOT IN ('approved_leave','public_holiday')),0),
             2) AS punctuality_pct,
             ROUND(
